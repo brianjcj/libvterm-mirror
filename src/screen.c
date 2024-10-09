@@ -550,6 +550,10 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
     /* TODO: Stop if dwl or dhl */
     while(REFLOW && old_lineinfo && old_row >= 0 && old_lineinfo[old_row].continuation)
       old_row--;
+    if (old_row < 0) {
+      /* the first line is continuation */
+      old_row = 0;
+    }
     int old_row_start = old_row;
 
     int width = 0;
