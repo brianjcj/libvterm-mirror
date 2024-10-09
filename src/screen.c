@@ -1,3 +1,4 @@
+#include "vterm.h"
 #include "vterm_internal.h"
 
 #include <stdio.h>
@@ -5,6 +6,8 @@
 
 #include "rect.h"
 #include "utf8.h"
+
+/* #include "log.h" */
 
 #define UNICODE_SPACE 0x20
 #define UNICODE_LINEFEED 0x0a
@@ -61,6 +64,7 @@ struct VTermScreen
 
   unsigned int global_reverse : 1;
   unsigned int reflow : 1;
+  unsigned int with_conpty : 1;
 
   /* Primary and Altscreen. buffers[1] is lazily allocated as needed */
   ScreenCell *buffers[2];
@@ -204,6 +208,18 @@ static int putglyph(VTermGlyphInfo *info, VTermPos pos, void *user)
   damagerect(screen, rect);
 
   return 1;
+}
+
+static void sb_pushline_from_row_with_cols(VTermScreen *screen, int row, bool continuation, int cols)
+{
+  VTermPos pos = { .row = row };
+  for(pos.col = 0; pos.col < cols; pos.col++)
+    vterm_screen_get_cell(screen, pos, screen->sb_buffer + pos.col);
+
+  if(screen->callbacks_has_pushline4 && screen->callbacks->sb_pushline4)
+    (screen->callbacks->sb_pushline4)(cols, screen->sb_buffer, continuation, screen->cbdata);
+  else
+    (screen->callbacks->sb_pushline)(cols, screen->sb_buffer, screen->cbdata);
 }
 
 static void sb_pushline_from_row(VTermScreen *screen, int row, bool continuation)
@@ -689,12 +705,14 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
           (screen->callbacks_has_pushline4 && screen->callbacks && screen->callbacks->sb_pushline4))
       for(int row = 0; row <= old_row; row++) {
         const VTermLineInfo *lineinfo = old_lineinfo + row;
-        sb_pushline_from_row(screen, row, lineinfo->continuation);
+        sb_pushline_from_row_with_cols(screen, row, lineinfo->continuation, old_cols);
       }
     if(active)
       statefields->pos.row -= (old_row + 1);
   }
-  if(new_row >= 0 && bufidx == BUFIDX_PRIMARY &&
+
+  if(!screen->with_conpty &&
+      new_row >= 0 && bufidx == BUFIDX_PRIMARY &&
       screen->callbacks && screen->callbacks->sb_popline) {
     /* Try to backfill rows by popping scrollback buffer */
     while(new_row >= 0) {
@@ -1062,6 +1080,11 @@ void vterm_screen_enable_reflow(VTermScreen *screen, bool reflow)
 void vterm_screen_set_reflow(VTermScreen *screen, bool reflow)
 {
   vterm_screen_enable_reflow(screen, reflow);
+}
+
+void vterm_screen_set_with_conpty(VTermScreen *screen, bool with_conpty)
+{
+  screen->with_conpty = with_conpty;
 }
 
 void vterm_screen_enable_altscreen(VTermScreen *screen, int altscreen)

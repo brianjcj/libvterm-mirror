@@ -561,6 +561,9 @@ void *vterm_screen_get_unrecognised_fbdata(VTermScreen *screen);
 
 void vterm_screen_enable_reflow(VTermScreen *screen, bool reflow);
 
+void vterm_screen_set_with_conpty(VTermScreen *screen, bool with_conpty);
+
+
 // Back-compat alias for the brief time it was in 0.3-RC1
 #define vterm_screen_set_reflow  vterm_screen_enable_reflow
 
