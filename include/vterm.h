@@ -547,6 +547,7 @@ typedef struct {
   int (*sb_clear)(void* user);
   /* ABI-compat this is only used if vterm_screen_callbacks_has_pushline4() is called */
   int (*sb_pushline4)(int cols, const VTermScreenCell *cells, bool continuation, void *user);
+  int (*sb_peek)(int *cols, bool *continuation, void *user);
 } VTermScreenCallbacks;
 
 VTermScreen *vterm_obtain_screen(VTerm *vt);
