@@ -631,7 +631,6 @@ static void reflow_line(VTermScreen *screen,
       new_line_filled += old_line_have;
 
       old_row++;
-      old_line_cells = line_popcount(old_buffer, old_row, -1, old_cols);
       old_line_taken = 0;
 
       if (old_line_have == new_line_need_cells) {
@@ -639,6 +638,11 @@ static void reflow_line(VTermScreen *screen,
         new_row++;
         new_line_filled = 0;
       }
+
+      if (old_row > old_row_end)
+        break;
+
+      old_line_cells = line_popcount(old_buffer, old_row, -1, old_cols);
 
     } else {
       // > new_line_need_cells
@@ -673,9 +677,6 @@ static void reflow_line(VTermScreen *screen,
       new_row++;
       new_line_filled = 0;
     }
-
-    if (old_row > old_row_end)
-      break;
   }
 
   *out_cols = new_line_filled;
