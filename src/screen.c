@@ -7,7 +7,12 @@
 #include "rect.h"
 #include "utf8.h"
 
-#include "log.h"
+#if defined (_DEBUG) || !defined (NDEBUG)
+#include <log.h>
+#else
+#define log_debug
+#endif
+
 
 #define UNICODE_SPACE 0x20
 #define UNICODE_LINEFEED 0x0a
@@ -82,7 +87,7 @@ struct VTermScreen
 static inline void clearcell(const VTermScreen *screen, ScreenCell *cell)
 {
   cell->chars[0] = 0;
-  cell->pen = screen->pen;
+  /* cell->pen = screen->pen; // TODO! */
 }
 
 static inline ScreenCell *getcell(const VTermScreen *screen, int row, int col)
@@ -571,8 +576,125 @@ static void copy_sb_cell_to_screen_cell(VTermScreen *screen, ScreenCell *dst, VT
 
 #define REFLOW (screen->reflow)
 
+/*
+static void step_n_in_rect(VTermPos *pos, int cols, int n) {
+  pos->col += n;
+  if (pos->col > cols - 1) {
+    pos->row += pos->col / cols;
+    pos->col = pos->col % cols;
+  }
+}
+
+inline bool pos_gt(VTermPos *pos1, VTermPos *pos2) {
+  if (pos1->row == pos2->row) {
+    return pos1->col > pos2->col ? true : false;
+  }
+  return pos1->row > pos2->row ? true : false;
+}
+*/
+
+static void reflow_line(VTermScreen *screen,
+                        ScreenCell *old_buffer, int old_row_start,
+                        int old_row_end, int old_cols, int new_cols,
+                        int *out_rows, int *out_cols,
+                        ScreenCell *out_buffer, int skip_rows,
+                        VTermPos *old_cursor, VTermPos *new_cursor, int new_row_start) {
+  /* log_debug("reflow line entry: for old rows: %d,%d", old_row_start, old_row_end); */
+  int new_row = 0;
+  int old_row = old_row_start;
+
+  // get a old line
+  int old_line_cells = line_popcount(old_buffer, old_row, -1, old_cols);
+  int old_line_taken = 0;
+  int new_line_filled = 0;
+
+  while (1) {
+    int new_line_need_cells = new_cols - new_line_filled;
+    int old_line_have = old_line_cells - old_line_taken;
+
+    if (old_line_have <= new_line_need_cells) {
+
+      if (out_buffer != NULL && new_row >= skip_rows) {
+        /* log_debug("copy1: %d:%d, count: %d", new_row, new_line_filled, old_line_have); */
+        memcpy(&out_buffer[(new_row - skip_rows) * new_cols + new_line_filled],
+               &old_buffer[old_row * old_cols + old_line_taken],
+               old_line_have * sizeof(ScreenCell));
+        if (old_cursor->row == old_row && old_cursor->col >= old_line_taken) {
+          new_cursor->row = new_row_start + new_row;
+          new_cursor->col = new_line_filled + (old_cursor->col - old_line_taken);
+        }
+      }
+
+      // current new line still has room
+      // next old line
+
+      new_line_filled += old_line_have;
+
+      old_row++;
+      old_line_cells = line_popcount(old_buffer, old_row, -1, old_cols);
+      old_line_taken = 0;
+
+      if (old_line_have == new_line_need_cells) {
+        // happy! next line together!
+        new_row++;
+        new_line_filled = 0;
+      }
+
+    } else {
+      // > new_line_need_cells
+      // fill the current new buffer line.
+
+      if (out_buffer != NULL && new_row >= skip_rows) {
+        /* log_debug("copy3: %d:%d, count: %d", new_row, new_line_filled, new_line_need_cells); */
+        memcpy(&out_buffer[(new_row - skip_rows) * new_cols + new_line_filled],
+               &old_buffer[old_row * old_cols + old_line_taken],
+               new_line_need_cells * sizeof(ScreenCell));
+
+        if (old_cursor->row == old_row && old_cursor->col >= old_line_taken &&
+            old_cursor->col < old_line_taken + new_line_need_cells) {
+          new_cursor->row = new_row_start + new_row;
+          new_cursor->col = new_line_filled + (old_cursor->col - old_line_taken);
+        }
+      }
+
+      old_line_taken += new_line_need_cells;
+
+      ScreenCell *cell = &old_buffer[old_row * old_cols + old_line_taken];
+      if (cell->chars[0] == (uint32_t)-1) {
+        // width > 1. don't break it
+        old_line_taken--;
+        if (out_buffer != NULL && new_row >= skip_rows) {
+          /* log_debug("clear cell: %d:%d", new_row, new_cols - 1); */
+          clearcell(screen, &out_buffer[(new_row - skip_rows) * new_cols + new_cols - 1]);
+        }
+      }
+
+      // next newline
+      new_row++;
+      new_line_filled = 0;
+    }
+
+    if (old_row > old_row_end)
+      break;
+  }
+
+  *out_cols = new_line_filled;
+  if (new_line_filled == 0) {
+    *out_rows = new_row;
+  } else {
+    *out_rows = new_row + 1;
+    if (out_buffer != NULL && new_row >= skip_rows) {
+      for (int c = new_line_filled; c < new_cols; c++) {
+        /* log_debug("clear cell2: %d:%d", new_row, c); */
+        clearcell(screen, &out_buffer[(new_row - skip_rows) * new_cols + c]);
+      }
+    }
+  }
+}
+
 static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new_cols, bool active, VTermStateFields *statefields)
 {
+  /* log_debug("resize_buffer: bufidx: %d", bufidx); */
   int old_rows = screen->rows;
   int old_cols = screen->cols;
 
@@ -588,11 +710,6 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   VTermPos old_cursor = statefields->pos;
   VTermPos new_cursor = { -1, -1 };
 
-#ifdef DEBUG_REFLOW
-  fprintf(stderr, "Resizing from %dx%d to %dx%d; cursor was at (%d,%d)\n",
-      old_cols, old_rows, new_cols, new_rows, old_cursor.col, old_cursor.row);
-#endif
-
   /* Keep track of the final row that is knonw to be blank, so we know what
    * spare space we have for scrolling into
    */
@@ -603,7 +720,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   while(old_row >= 0) {
     int old_row_end = old_row;
     /* TODO: Stop if dwl or dhl */
-    while(REFLOW && old_lineinfo && old_row >= 0 && old_lineinfo[old_row].continuation)
+    while(old_lineinfo && old_row >= 0 && old_lineinfo[old_row].continuation)
       old_row--;
     if (old_row < 0) {
       /* the first line is continuation */
@@ -611,20 +728,22 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
     }
     int old_row_start = old_row;
 
-    int width = 0;
-    for(int row = old_row_start; row <= old_row_end; row++) {
-      if(REFLOW && row < (old_rows - 1) && old_lineinfo[row + 1].continuation)
-        width += old_cols;
-      else
-        width += line_popcount(old_buffer, row, old_rows, old_cols);
-    }
+    int out_rows = 0;
+    int out_cols = 0;
+    reflow_line(screen, old_buffer, old_row_start, old_row_end, old_cols,
+                new_cols, &out_rows, &out_cols, NULL, 0, NULL, NULL, 0);
+
+    /* if (bufidx == BUFIDX_PRIMARY) */
+    /*   log_debug("reflow line: old_cols: %d, new_cols: %d, old: %d, %d, out: %d, %d", */
+    /*             old_cols, new_cols, */
+    /*             old_row_start, old_row_end, out_rows, out_cols); */
+
+    int width = new_cols * (out_rows - 1) + out_cols;
 
     if(final_blank_row == (new_row + 1) && width == 0)
       final_blank_row = new_row;
 
-    int new_height = REFLOW
-      ? width ? (width + new_cols - 1) / new_cols : 1
-      : 1;
+    int new_height = out_rows;
 
     int new_row_end = new_row;
     int new_row_start = new_row - new_height + 1;
@@ -646,10 +765,6 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
         downwards = spare_rows;
       int rowcount = new_rows - downwards;
 
-#ifdef DEBUG_REFLOW
-      fprintf(stderr, "  scroll %d rows +%d downwards\n", rowcount, downwards);
-#endif
-
       memmove(&new_buffer[downwards * new_cols], &new_buffer[0],   rowcount * new_cols * sizeof(ScreenCell));
       memmove(&new_lineinfo[downwards],          &new_lineinfo[0], rowcount            * sizeof(new_lineinfo[0]));
 
@@ -663,11 +778,6 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
       final_blank_row += downwards;
     }
 
-#ifdef DEBUG_REFLOW
-    fprintf(stderr, "  rows [%d..%d] <- [%d..%d] width=%d\n",
-        new_row_start, new_row_end, old_row_start, old_row_end, width);
-#endif
-
     if(new_row_start < 0) {
       if(old_row_start <= old_cursor.row && old_cursor.row < old_row_end) {
         new_cursor.row = 0;
@@ -679,45 +789,13 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
       break;
     }
 
-    for(new_row = new_row_start, old_row = old_row_start; new_row <= new_row_end; new_row++) {
-      int count = width >= new_cols ? new_cols : width;
-      width -= count;
-
-      int new_col = 0;
-
-      while(count) {
-        /* TODO: This could surely be done a lot faster by memcpy()'ing the entire range */
-        new_buffer[new_row * new_cols + new_col] = old_buffer[old_row * old_cols + old_col];
-
-        if(old_cursor.row == old_row && old_cursor.col == old_col)
-          new_cursor.row = new_row, new_cursor.col = new_col;
-
-        old_col++;
-        if(old_col == old_cols) {
-          old_row++;
-
-          if(!REFLOW) {
-            new_col++;
-            break;
-          }
-          old_col = 0;
-        }
-
-        new_col++;
-        count--;
-      }
-
-      if(old_cursor.row == old_row && old_cursor.col >= old_col) {
-        new_cursor.row = new_row, new_cursor.col = (old_cursor.col - old_col + new_col);
-        if(new_cursor.col >= new_cols)
-          new_cursor.col = new_cols-1;
-      }
-
-      while(new_col < new_cols) {
-        clearcell(screen, &new_buffer[new_row * new_cols + new_col]);
-        new_col++;
-      }
-
+    /* log_debug("refline ooo: new_row_start: %d:%d", new_row_start, new_row_end); */
+    int skip_rows = 0;
+    reflow_line(screen, old_buffer, old_row_start, old_row_end, old_cols,
+                new_cols, &out_rows, &out_cols,
+                &new_buffer[new_row_start * new_cols], skip_rows, &old_cursor,
+                &new_cursor, new_row_start);
+    for (new_row = new_row_start; new_row <= new_row_end; ++new_row) {
       new_lineinfo[new_row].continuation = (new_row > new_row_start);
     }
 
@@ -742,11 +820,15 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   if(old_row >= 0 && bufidx == BUFIDX_PRIMARY) {
     /* Push spare lines to scrollback buffer */
     if((screen->callbacks && screen->callbacks->sb_pushline) ||
-          (screen->callbacks_has_pushline4 && screen->callbacks && screen->callbacks->sb_pushline4))
+       (screen->callbacks_has_pushline4 && screen->callbacks && screen->callbacks->sb_pushline4)) {
+      ScreenCell *tmp = screen->buffer;
+      screen->buffer = old_buffer;
       for(int row = 0; row <= old_row; row++) {
         const VTermLineInfo *lineinfo = old_lineinfo + row;
         sb_pushline_from_row_with_cols(screen, row, lineinfo->continuation, old_cols);
       }
+      screen->buffer = tmp;
+    }
     if(active)
       statefields->pos.row -= (old_row + 1);
   }
@@ -805,6 +887,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   vterm_allocator_free(screen->vt, old_lineinfo);
   statefields->lineinfos[bufidx] = new_lineinfo;
 
+  /* log_debug("new cursor %d:%d, active: %d", new_cursor.row, new_cursor.col, active); */
   if(active)
     statefields->pos = new_cursor;
 
@@ -829,7 +912,8 @@ static int resize(int new_rows, int new_cols, VTermStateFields *fields, void *us
   else if(new_rows != old_rows) {
     /* We don't need a full resize of the altscreen because it isn't enabled
      * but we should at least keep the lineinfo the right size */
-    vterm_allocator_free(screen->vt, fields->lineinfos[BUFIDX_ALTSCREEN]);
+    if (fields->lineinfos[BUFIDX_ALTSCREEN])
+      vterm_allocator_free(screen->vt, fields->lineinfos[BUFIDX_ALTSCREEN]);
 
     VTermLineInfo *new_lineinfo = vterm_allocator_malloc(screen->vt, sizeof(new_lineinfo[0]) * new_rows);
     for(int row = 0; row < new_rows; row++)
