@@ -787,6 +787,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
           new_cursor.col = new_cols-1;
       }
       dont_pop = true;
+      old_row = old_row_end;
       break;
     }
 
