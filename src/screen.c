@@ -596,7 +596,7 @@ inline bool pos_gt(VTermPos *pos1, VTermPos *pos2) {
 static void reflow_line(VTermScreen *screen,
                         ScreenCell *old_buffer, int old_row_start,
                         int old_row_end, int old_cols, int new_cols,
-                        int *out_rows, int *out_cols,
+                        VTermPos *out_rect,
                         ScreenCell *out_buffer, int skip_rows,
                         VTermPos *old_cursor, VTermPos *new_cursor, int new_row_start) {
   /* log_debug("reflow line entry: for old rows: %d,%d", old_row_start, old_row_end); */
@@ -633,14 +633,14 @@ static void reflow_line(VTermScreen *screen,
       old_row++;
       old_line_taken = 0;
 
+      if (old_row > old_row_end)
+        break;
+
       if (old_line_have == new_line_need_cells) {
         // happy! next line together!
         new_row++;
         new_line_filled = 0;
       }
-
-      if (old_row > old_row_end)
-        break;
 
       old_line_cells = line_popcount(old_buffer, old_row, -1, old_cols);
 
@@ -679,11 +679,9 @@ static void reflow_line(VTermScreen *screen,
     }
   }
 
-  *out_cols = new_line_filled;
-  if (new_line_filled == 0) {
-    *out_rows = new_row;
-  } else {
-    *out_rows = new_row + 1;
+  out_rect->col = new_line_filled <= 0? 0 : new_line_filled - 1;
+  out_rect->row = new_row;
+  if (new_line_filled > 0) {
     if (out_buffer != NULL && new_row >= skip_rows) {
       for (int c = new_line_filled; c < new_cols; c++) {
         /* log_debug("clear cell2: %d:%d", new_row, c); */
@@ -729,22 +727,21 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
     }
     int old_row_start = old_row;
 
-    int out_rows = 0;
-    int out_cols = 0;
+    VTermPos out_rect;
     reflow_line(screen, old_buffer, old_row_start, old_row_end, old_cols,
-                new_cols, &out_rows, &out_cols, NULL, 0, NULL, NULL, 0);
+                new_cols, &out_rect, NULL, 0, NULL, NULL, 0);
 
     /* if (bufidx == BUFIDX_PRIMARY) */
     /*   log_debug("reflow line: old_cols: %d, new_cols: %d, old: %d, %d, out: %d, %d", */
     /*             old_cols, new_cols, */
     /*             old_row_start, old_row_end, out_rows, out_cols); */
 
-    int width = new_cols * (out_rows - 1) + out_cols;
+    int width = new_cols * (out_rect.row + 1) + out_rect.col + 1;
 
     if(final_blank_row == (new_row + 1) && width == 0)
       final_blank_row = new_row;
 
-    int new_height = out_rows;
+    int new_height = out_rect.row + 1;
 
     int new_row_end = new_row;
     int new_row_start = new_row - new_height + 1;
@@ -794,7 +791,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
     /* log_debug("refline ooo: new_row_start: %d:%d", new_row_start, new_row_end); */
     int skip_rows = 0;
     reflow_line(screen, old_buffer, old_row_start, old_row_end, old_cols,
-                new_cols, &out_rows, &out_cols,
+                new_cols, &out_rect,
                 &new_buffer[new_row_start * new_cols], skip_rows, &old_cursor,
                 &new_cursor, new_row_start);
     for (new_row = new_row_start; new_row <= new_row_end; ++new_row) {
@@ -845,10 +842,15 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
       if (!(screen->callbacks->sb_peek(&pop_cols, &continuation, screen->cbdata)))
         break;
 
+      if (pop_cols > new_cols)
+        break; /* TODO temp. avoid the line be truncated */
+
       ensure_sb_buffer_cols(screen, pop_cols);
 
       if(!(screen->callbacks->sb_popline(pop_cols, screen->sb_buffer, screen->cbdata)))
         break;
+
+      /* TODO: reflow the pop line */
 
       VTermPos pos = { .row = new_row };
       for(pos.col = 0; pos.col < pop_cols && pos.col < new_cols; pos.col += screen->sb_buffer[pos.col].width) {
