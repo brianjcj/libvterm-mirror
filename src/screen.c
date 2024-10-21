@@ -1103,7 +1103,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
           reflow_sb_line(screen, sb_buffer, pop_cols, new_cols,
                          &out_rect, &new_buffer[start_row * new_cols], 0);
           for (int i = start_row + 1; i <= new_row; i++) {
-            new_lineinfo[i].continuation = false;
+            new_lineinfo[i].continuation = true;
           }
           new_lineinfo[start_row].continuation = continuation;
 
