@@ -757,35 +757,26 @@ static void reflow_sb_line(VTermScreen *screen,
   }
 }
 
+// to fill the first line free cells, shift the rest continuation lines up.
 static int combine_contination_lines(VTermScreen *screen, ScreenCell *buffer, int row_start,
                                      int rows, int cols,
-                                     VTermLineInfo *lineinfo) {
+                                     VTermLineInfo *lineinfo,
+                                     int *empty_row) {
   log_debug("combine_contination_lines entry for new_row_start: %d", row_start);
   int delta_count = 0;
 
   int target_row = row_start;
   int target_row_line_count = line_popcount(buffer, target_row, cols);
+
+  if (target_row_line_count == cols) {
+    // the first line already full. do nothing
+    return delta_count;
+  }
+
   int src_row = target_row + 1;
 
   while (1) {
-
-    if (target_row_line_count == cols) {
-      target_row++;
-      if (target_row >= rows)
-        break;
-      if (!lineinfo[target_row].continuation)
-        break;
-      target_row_line_count = line_popcount(buffer, target_row, cols);
-      if (target_row >= src_row) {
-        src_row = target_row + 1;
-      }
-      continue;
-    }
-
     if (src_row >= rows)
-      break;
-
-    if (target_row >= rows)
       break;
 
     if (!lineinfo[src_row].continuation) {
@@ -804,19 +795,21 @@ static int combine_contination_lines(VTermScreen *screen, ScreenCell *buffer, in
               src_row, target_line_spare, src_line_count, target_row_line_count, cols);
 
     if (src_line_count <= move_up_count) {
-      log_debug("combine whole line");
+      log_debug("combine whole line. done");
       // move/copy the whole line up.  target_row, target_row_line_count;
       memmove(&buffer[target_row * cols + target_row_line_count],
               &buffer[src_row * cols], src_line_count * sizeof(ScreenCell));
 
-      delta_count--;  // line empty
-
       target_row_line_count += src_line_count;
-      if (target_row_line_count >= cols) {
-        target_row++;
-        target_row_line_count = 0;
-      }
-      src_row++;
+
+      delta_count--;
+
+      if (empty_row != NULL)
+        *empty_row = src_row;
+
+      /* done */
+      break;
+
     } else {
       log_debug("combine split, target_line_spare: %d, src_line_count: %d, target_row_line_count: %d, new_cols: %d",
                 target_line_spare, src_line_count, target_row_line_count, cols);
@@ -834,15 +827,8 @@ static int combine_contination_lines(VTermScreen *screen, ScreenCell *buffer, in
         // the clear the end cell
         clearcell(screen, &buffer[target_row * cols + cols - 1]);
         target_row++;
-        if (target_row >= rows)
-          break;
-        if (!lineinfo[target_row].continuation)
-          break;
-        target_row_line_count = line_popcount(buffer, target_row, cols);
-        if (src_row == target_row) {
-          src_row = target_row + 1;
-        }
-        continue;
+        /* done */
+        break;
       }
 
       log_debug("combine. split");
@@ -869,23 +855,23 @@ static int combine_contination_lines(VTermScreen *screen, ScreenCell *buffer, in
     clearcell(screen, &buffer[target_row * cols + i]);
   }
 
-  if (delta_count < 0) {
-    // move the line down.
-    memmove(&buffer[(row_start - delta_count) * cols],
-            &buffer[row_start * cols], (-delta_count * cols) * sizeof(ScreenCell));
-
-    // update line info.
-    memmove(&lineinfo[row_start - delta_count], &lineinfo[row_start],
-            (-delta_count) * sizeof(VTermLineInfo));
-
-    for (int i = 0; i < - delta_count; i++) {
-      for (int j = 0; j < cols; ++j) {
-        clearcell(screen, &buffer[(row_start + i) * cols + j]);
-      }
-    }
-  }
-
   return delta_count;
+}
+
+static void move_lines_down(ScreenCell *buffer, int row_start,
+                            int down_line_step,
+                            int move_line_count, /* how many line to be moved */
+                            int cols, VTermLineInfo *lineinfo) {
+  log_debug("move_line_count: row_start: %d, down_line_step: %d, move_line_count: %d, cols: %d",
+            row_start, down_line_step, move_line_count, cols);
+  // move the line down.
+  memmove(&buffer[(row_start + down_line_step) * cols],
+          &buffer[row_start * cols],
+          (move_line_count * cols) * sizeof(ScreenCell));
+
+  // update line info.
+  memmove(&lineinfo[row_start + down_line_step], &lineinfo[row_start],
+          move_line_count * sizeof(VTermLineInfo));
 }
 
 static bool shift_down_continuation_lines(
@@ -990,9 +976,14 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
                 old_row_end);
 
     if (width == 0) {
-      log_debug("skip blank line: old_row_start: %d", old_row_start);
       if (!non_copy_row_met) {
         /* skip this blank line */
+        int cc = line_popcount(old_buffer, old_row_start, old_cols);
+        log_debug("skip blank line: old_row_start: %d-%d, out_rect: %d:%d, cc:%d",
+                  old_row_start,
+                  old_row_end,
+                  out_rect.row, out_rect.col,
+                  cc);
         old_row = old_row_start - 1;
         continue;
       }
@@ -1122,9 +1113,17 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
 
           int delta = 0;
           if (below_new_row_contination) {
+            int empty_row;
             delta = combine_contination_lines(
-                screen, new_buffer, below_row_index - 1, new_rows, new_cols, new_lineinfo);
-            log_debug("combine(1): delta: %d", delta);
+                screen, new_buffer, below_row_index - 1, new_rows, new_cols,
+                new_lineinfo, &empty_row);
+            log_debug("combine(1): delta: %d, empty_row: %d", delta, empty_row);
+
+            if (delta < 0) {
+              move_lines_down(new_buffer, start_row, -delta,
+                              empty_row - start_row, new_cols, new_lineinfo);
+            }
+
             new_row -= delta;
             log_debug("combined(1) line: row: %d continuation: %d", new_row,
                       new_lineinfo[new_row].continuation);
@@ -1144,11 +1143,19 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
         int delta = 0;
         if (below_new_row_contination) {
           // short line. need to combine.
-          log_debug("reflow_sb_line: need combine lines below");
+          log_debug("reflow_sb_line: short: need combine lines below");
 
+          int empty_row;
           delta = combine_contination_lines(screen, new_buffer, new_row, new_rows,
-                                            new_cols, new_lineinfo);
-          log_debug("combine: delta: %d", delta);
+                                            new_cols, new_lineinfo, &empty_row);
+          log_debug("combine: delta: %d, empty_row: %d", delta, empty_row);
+
+          if (delta < 0) {
+            int start_row = new_row;
+            move_lines_down(new_buffer, start_row, -delta,
+                            empty_row - start_row, new_cols, new_lineinfo);
+          }
+
           new_row -= delta;
           log_debug("combined line: row: %d continuation: %d", new_row, new_lineinfo[new_row].continuation);
         }
