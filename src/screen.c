@@ -858,8 +858,8 @@ static int combine_contination_lines(VTermScreen *screen, ScreenCell *buffer, in
   return delta_count;
 }
 
-static void move_lines_down(ScreenCell *buffer, int row_start,
-                            int down_line_step,
+static void move_lines_down(VTermScreen *screen, ScreenCell *buffer,
+                            int row_start, int down_line_step,
                             int move_line_count, /* how many line to be moved */
                             int cols, VTermLineInfo *lineinfo) {
   log_debug("move_line_count: row_start: %d, down_line_step: %d, move_line_count: %d, cols: %d",
@@ -872,6 +872,13 @@ static void move_lines_down(ScreenCell *buffer, int row_start,
   // update line info.
   memmove(&lineinfo[row_start + down_line_step], &lineinfo[row_start],
           move_line_count * sizeof(VTermLineInfo));
+
+  // clear the empty line
+  for (int i = 0; i < down_line_step; i++) {
+    for (int j = 0; j < cols; ++j) {
+      clearcell(screen, &buffer[(row_start + i) * cols + j]);
+    }
+  }
 }
 
 static bool shift_down_continuation_lines(
@@ -1120,7 +1127,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
             log_debug("combine(1): delta: %d, empty_row: %d", delta, empty_row);
 
             if (delta < 0) {
-              move_lines_down(new_buffer, start_row, -delta,
+              move_lines_down(screen, new_buffer, start_row, -delta,
                               empty_row - start_row, new_cols, new_lineinfo);
             }
 
@@ -1152,7 +1159,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
 
           if (delta < 0) {
             int start_row = new_row;
-            move_lines_down(new_buffer, start_row, -delta,
+            move_lines_down(screen, new_buffer, start_row, -delta,
                             empty_row - start_row, new_cols, new_lineinfo);
           }
 
@@ -1492,6 +1499,7 @@ int vterm_screen_get_cell(const VTermScreen *screen, VTermPos pos, VTermScreenCe
   cell->fg = intcell->pen.fg;
   cell->bg = intcell->pen.bg;
 
+  // TODO: screen->cols!
   if(pos.col < (screen->cols - 1) &&
      getcell(screen, pos.row, pos.col + 1)->chars[0] == (uint32_t)-1)
     cell->width = 2;
