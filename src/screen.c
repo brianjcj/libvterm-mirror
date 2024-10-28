@@ -544,6 +544,8 @@ static int sb_line_popcount(const VTermScreenCell *buffer, int cols)
   int col = cols - 1;
   while(col >= 0 && buffer[col].chars[0] == 0)
     col--;
+  if (buffer[col].width == 2)
+    col++;
   return col + 1;
 }
 
@@ -1063,13 +1065,20 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
     /* Push spare lines to scrollback buffer */
     if((screen->callbacks && screen->callbacks->sb_pushline) ||
        (screen->callbacks_has_pushline4 && screen->callbacks && screen->callbacks->sb_pushline4)) {
+      /* TODO */
       ScreenCell *tmp = screen->buffer;
-      screen->buffer = old_buffer;
+      int tmp_rows = screen->rows;
+      int tmp_cols = screen->cols;
+      screen->buffer = old_buffer;  /* screen->buffer right now might point to alt screen buffer */
+      screen->rows = old_rows;
+      screen->cols = old_cols;
       for(int row = 0; row <= old_row; row++) {
         const VTermLineInfo *lineinfo = old_lineinfo + row;
         sb_pushline_from_row_with_cols(screen, row, lineinfo->continuation, old_cols);
       }
       screen->buffer = tmp;
+      screen->rows = tmp_rows;
+      screen->cols = tmp_cols;
     }
     if(active)
       statefields->pos.row -= (old_row + 1);
@@ -1476,6 +1485,10 @@ int vterm_screen_get_cell(const VTermScreen *screen, VTermPos pos, VTermScreenCe
   if(!intcell)
     return 0;
 
+  if (intcell->chars[0] == (uint32_t) -1) {
+    return 0;
+  }
+
   for(int i = 0; i < VTERM_MAX_CHARS_PER_CELL; i++) {
     cell->chars[i] = intcell->chars[i];
     if(!intcell->chars[i])
@@ -1499,7 +1512,6 @@ int vterm_screen_get_cell(const VTermScreen *screen, VTermPos pos, VTermScreenCe
   cell->fg = intcell->pen.fg;
   cell->bg = intcell->pen.bg;
 
-  // TODO: screen->cols!
   if(pos.col < (screen->cols - 1) &&
      getcell(screen, pos.row, pos.col + 1)->chars[0] == (uint32_t)-1)
     cell->width = 2;
