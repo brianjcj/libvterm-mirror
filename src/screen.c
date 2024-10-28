@@ -885,7 +885,7 @@ static void move_lines_down(VTermScreen *screen, ScreenCell *buffer,
 
 static bool shift_down_continuation_lines(
     VTermScreen *screen, ScreenCell *line_buffer, int row_index, int rows,
-    int cols, int shift_count, VTermLineInfo *lineinfo, bool dry_run) {
+    int cols, int shift_count, VTermLineInfo *lineinfo) {
 
   if (row_index >= rows)
     return false;
@@ -898,14 +898,12 @@ static bool shift_down_continuation_lines(
 
   if (cols - cell_count >= shift_count) {
     // done!
-    if (!dry_run) {
-      // memmove and clear cell if needed!
-      memmove(&line_buffer[row_index * cols + shift_count],
-              &line_buffer[row_index * cols],
-              sizeof(ScreenCell) * cell_count);
-      for (int i = shift_count + cell_count; i < cols; i++) {
-        clearcell(screen, &line_buffer[row_index * cols + i]);
-      }
+    // memmove and clear cell if needed!
+    memmove(&line_buffer[row_index * cols + shift_count],
+            &line_buffer[row_index * cols],
+            sizeof(ScreenCell) * cell_count);
+    for (int i = shift_count + cell_count; i < cols; i++) {
+      clearcell(screen, &line_buffer[row_index * cols + i]);
     }
 
     return true;
@@ -923,21 +921,19 @@ static bool shift_down_continuation_lines(
   int part2_count = cell_count - part1_count;
 
   if (!shift_down_continuation_lines(screen, line_buffer, row_index + 1, rows,
-                                     cols, part2_count, lineinfo, dry_run))
+                                     cols, part2_count, lineinfo))
     return false;
 
-  if (!dry_run) {
-    // copy the part2 to next rows
-    memmove(&line_buffer[row_index * cols + part1_count],
-            &line_buffer[(row_index + 1) * cols],
-            sizeof(ScreenCell) * part2_count);
+  // copy the part2 to next rows
+  memmove(&line_buffer[row_index * cols + part1_count],
+          &line_buffer[(row_index + 1) * cols],
+          sizeof(ScreenCell) * part2_count);
 
-    // memmov the part1.
-    memmove(&line_buffer[row_index * cols + shift_count],
-            &line_buffer[row_index * cols], sizeof(ScreenCell) * part1_count);
-    for (int i = shift_count + part1_count; i < cols; i++) {
-      clearcell(screen, &line_buffer[row_index * cols + i]);
-    }
+  // memmov the part1.
+  memmove(&line_buffer[row_index * cols + shift_count],
+          &line_buffer[row_index * cols], sizeof(ScreenCell) * part1_count);
+  for (int i = shift_count + part1_count; i < cols; i++) {
+    clearcell(screen, &line_buffer[row_index * cols + i]);
   }
 
   return true;
@@ -1224,11 +1220,8 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
 
       if (!shift_down_continuation_lines(screen, new_buffer, 0, new_rows,
                                          new_cols, out_rect.col + 1,
-                                         new_lineinfo, true))
+                                         new_lineinfo))
         break;
-
-      shift_down_continuation_lines(screen, new_buffer, 0, new_rows, new_cols,
-                                    out_rect.col + 1, new_lineinfo, false);
 
       reflow_sb_line(screen, sb_buffer, pop_cols, new_cols, &out_rect,
                      &new_buffer[0], 0, false);
