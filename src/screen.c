@@ -955,7 +955,8 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   int new_row = new_rows - 1;
 
   VTermPos old_cursor = statefields->pos;
-  VTermPos new_cursor = { -1, -1 };
+  /* VTermPos new_cursor = { -1, -1 }; */
+  VTermPos new_cursor = { 0, 0 };
 
   bool non_copy_row_met = false;
 
